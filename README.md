@@ -16,7 +16,7 @@ After cloining, please first unzip ./data_and_csv.zip.
 
 # Distant Supervision
 
-For flexible usage, we provide the extracted text embeddings of all the ASR sentences in HowTo100M and all the steps we used.  (link TBD)
+For flexible usage, we provide [the extracted text embeddings of all the ASR sentences in HowTo100M](https://dl.fbaipublicfiles.com/video-distant-supervision/processed_asr_emb_mpnet.zip) (Large file ~350 GB) and all the steps we used. 
 We included the text of all the steps we used in [./data/step_label_text.json](./data/step_label_text.json). (Note that only 'headlines' are used.)
 
 
@@ -29,13 +29,13 @@ We also provide the models trained for recognition of procedural activities on C
 
 |Long-term Model | Segment Model | Downstream Task | Acc (%) | Link |
 | --- | --- | --- | --- | --- |
-|Transformer w/ KB Transfer | TimeSformer | Recognition of Procedural Activities | 90.0 |TBD |
-|Transformer w/ KB Transfer | TimeSformer | Step Forecasting | 39.4 |TBD |
+|Transformer w/ KB Transfer | TimeSformer | Recognition of Procedural Activities | 90.0 | [Weight](https://dl.fbaipublicfiles.com/video-distant-supervision/procedural.pth) |
+|Transformer w/ KB Transfer | TimeSformer | Step Forecasting | 39.4 | [Weight](https://dl.fbaipublicfiles.com/video-distant-supervision/step.pth) |
 
 
 | Segment Model | Downstream Task | Action (%) | Verb (%) | Noun (%) | Link |
 | --- | --- | --- | --- | --- | --- |
-| TimeSformer | Egocentric Activity Classification | 44.4 | 67.1 | 58.1 | TBD |
+| TimeSformer | Egocentric Activity Classification | 44.4 | 67.1 | 58.1 | [Weight](https://dl.fbaipublicfiles.com/video-distant-supervision/ek.pth) |
 
 
 # Installation
