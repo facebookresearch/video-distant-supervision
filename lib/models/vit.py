@@ -363,9 +363,9 @@ class VisionTransformer(nn.Module):
             self.apply(self._init_weights)
         self.text = text_model
         if num_classes == 10588:
-            self.step2task = torch.load("./data/step_to_task.pth").transpose(0, 1)
-        if text_model == "paraphrase-mpnet-base-v2" and not len(cfg.TRAIN.TEXT_EMB) > 1:
-            if not (not label_emb == "" and not text_model == ""):
+            self.step2task = torch.load("/data/home/medhini/video-distant-supervision/data/step_to_task.pth").transpose(0,1)
+        if text_model=='paraphrase-mpnet-base-v2' and not len(cfg.TRAIN.TEXT_EMB) > 1:
+            if not (not label_emb == '' and not text_model==''):
                 self.head = nn.Linear(embed_dim, 768)
             if lp:
                 self.text_lp = nn.Linear(768, 768)
@@ -485,11 +485,16 @@ class VisionTransformer(nn.Module):
                     )
                 self.head_cls = nn.Linear(embed_dim, num_classes)
                 self.apply(self._init_weights)
-                print("drop path rate", dpr[-1])
+                print('drop path rate', dpr[-1])
+            self.apply_head_cls_to_all_tokens = cfg.MODEL.APPLY_HEAD_CLS_TO_ALL_TOKENS
             if cfg.MODEL.EXTRA_POS:
                 self.head_pos_embed = nn.Parameter(torch.zeros(1, num_seg, embed_dim))
-
-        if cfg.TRAIN.DATASET == "Epickitchens":
+            if cfg.MODEL.MASK_RATIO > 0:
+                self.mask_token = nn.Parameter(torch.zeros(embed_dim))
+                trunc_normal_(self.mask_token, std=.02)
+            
+            
+        if  cfg.TRAIN.DATASET == 'Epickitchens':
             self.head_n = nn.Linear(embed_dim, 300)
             self.head_v = nn.Linear(embed_dim, 97)
 
@@ -590,11 +595,8 @@ class VisionTransformer(nn.Module):
         else:
             return x
 
-    def forward(self, x):
-        if len(self.text) > 0 and (
-            (hasattr(self, "step2task") and self.training)
-            or not hasattr(self, "step2task")
-        ):
+    def forward(self, x, seg_mask=None):
+        if len(self.text) > 0 and( (hasattr(self, 'step2task') and self.training) or not hasattr(self, 'step2task')):
             x, text = x
         if hasattr(self, "num_seg") and self.num_seg > 0:
             x = rearrange(
@@ -605,14 +607,21 @@ class VisionTransformer(nn.Module):
             )
 
         x = self.forward_features(x)
-
-        if hasattr(self, "num_seg") and self.num_seg > 0:
-            if hasattr(self, "ret") and self.ret > 0:
+        
+        if hasattr(self, 'num_seg') and self.num_seg>0:
+                        
+            if hasattr(self, 'ret') and self.ret > 0: 
                 ts = self.head(x)
 
-            if hasattr(self, "head_pos_embed"):
-                x = x.view(x.shape[0] // self.num_seg, -1, 768) + self.head_pos_embed
-            if hasattr(self, "drope"):
+            if seg_mask is not None:
+                x = rearrange(x, '(b m) e -> b m e', m=self.num_seg, e=768)
+                # Where seg_mask == 0, replace with mask_token
+                x[~seg_mask.bool()] = self.mask_token
+                x = rearrange(x, 'b m e -> (b m) e')
+
+            if hasattr(self, 'head_pos_embed'):
+                x = x.view(x.shape[0]//self.num_seg, -1, 768) + self.head_pos_embed
+            if hasattr(self, 'drope'):
                 x = self.drope(x)
             if hasattr(self, "ret") and self.ret > 0:
                 if self.training:
@@ -653,10 +662,11 @@ class VisionTransformer(nn.Module):
                     x = self.head_tr[0](x, x.shape[0], self.num_seg * (1 + self.ret), 1)
                 else:
                     for i in range(self.extra_tr):
-                        x = self.head_tr[0][i](
-                            x, x.shape[0], self.num_seg * (1 + self.ret), 1
-                        )
-                x = self.head_tr[1](x[:, 0, :])
+                        x = self.head_tr[0][i](x, x.shape[0],self.num_seg*(1+self.ret),1)
+                if self.apply_head_cls_to_all_tokens:
+                    x = self.head_tr[1](x)
+                else:
+                    x = self.head_tr[1](x[:,0,:])
                 x = self.head_cls(x)
             else:
                 if self.extra_tr == 1:
@@ -665,10 +675,11 @@ class VisionTransformer(nn.Module):
                     )
                 else:
                     for i in range(self.extra_tr):
-                        x = self.head[0][i](
-                            x.view(-1, self.num_seg, 768), x.shape[0], self.num_seg, 1
-                        )
-                x = self.head[1](x[:, 0, :])
+                        x = self.head[0][i](x.view(-1, self.num_seg, 768), x.shape[0],self.num_seg,1)
+                if self.apply_head_cls_to_all_tokens:
+                    x= self.head[1](x)
+                else:
+                    x = self.head[1](x[:,0,:])
                 x = self.head_cls(x)
         elif hasattr(self, "head_n"):
             v = self.head_v(x)
@@ -827,12 +838,6 @@ class vit_base_patch16_224(nn.Module):
         self.fc1 = nn.Linear(768, 64)
         self.fc2 = nn.Linear(64, 2)
 
-    def forward(self, x):
-        x = self.model(x)
-        print(x[0].shape)
-        # x = self.pos_enc(x)
-        x[0] = self.transformer_encoder(x[0])
-        x = self.fc1(x)
-        x = self.fc2(x)
-
+    def forward(self, x, seg_mask=None):
+        x = self.model(x, seg_mask=seg_mask)
         return x

@@ -1,0 +1,60 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved.
+TRAIN:
+  ENABLE: True
+  DATASET: howto100m
+  BATCH_SIZE: 16
+  EVAL_PERIOD: 5
+  CHECKPOINT_PERIOD: 1
+  AUTO_RESUME: True
+  TEXT_EMB: '/data/home/medhini/video-distant-supervision/processed_asr_emb_mpnet'
+  TEXT: '/fsx/suvir/video/howto100m_csv/'
+  LABEL_EMB: '/data/home/medhini/video-distant-supervision/data/mpnet_step_emb_only_headline.pth'
+  TOPK: 3
+DATA:
+  PATH_TO_DATA_DIR: "/data/home/medhini/video-distant-supervision/data_csv/howto100m_subset/"
+  PATH_PREFIX: "/fsx/medhini/data/howto100m/howto100m_videos"
+  NUM_FRAMES: 8
+  SAMPLING_RATE: 32
+  TRAIN_JITTER_SCALES: [256, 320]
+  TRAIN_CROP_SIZE: 224
+  TEST_CROP_SIZE: 224
+  INPUT_CHANNEL_NUM: [3]
+  FD: 9.
+  DECODING_BACKEND: 'ffmpeg'
+TIMESFORMER:
+  ATTENTION_TYPE: 'divided_space_time'
+SOLVER:
+  BASE_LR: 0.005
+  LR_POLICY: steps_with_relative_lrs
+  STEPS: [0, 11, 14]
+  LRS: [1, 0.1, 0.01]
+  MAX_EPOCH: 15
+  MOMENTUM: 0.9
+  WEIGHT_DECAY: 1e-4
+  OPTIMIZING_METHOD: sgd
+MODEL:
+  MODEL_NAME: vit_base_patch16_224
+  NUM_CLASSES: 10588
+  ARCH: vit
+  LOSS_FUNC: msm
+  MASK_RATIO: 0.15
+  DROPOUT_RATE: 0.5
+  NUM_SEG: 10
+  EXTRA_TR: '2-space'
+  TEXT_MODEL: paraphrase-mpnet-base-v2
+  MIN_LEN: 12
+  EXTRA_POS: True
+  APPLY_HEAD_CLS_TO_ALL_TOKENS: True
+TEST:
+  ENABLE: True
+  DATASET: dummy_howto100m
+  BATCH_SIZE: 16
+  NUM_ENSEMBLE_VIEWS: 48
+  NUM_SPATIAL_CROPS: 1
+DATA_LOADER:
+  NUM_WORKERS: 16
+  PIN_MEMORY: True
+NUM_GPUS: 8
+NUM_SHARDS: 1
+RNG_SEED: 0
+OUTPUT_DIR: .

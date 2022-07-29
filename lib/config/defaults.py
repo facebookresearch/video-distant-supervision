@@ -289,6 +289,12 @@ _C.MODEL.RET_POS_MUL = False
 
 _C.MODEL.DROP_PATH = 0.1
 
+# If set, add a mask token parameter to the model and use this mask ratio in
+# masking loss
+_C.MODEL.MASK_RATIO = 0.
+
+_C.MODEL.APPLY_HEAD_CLS_TO_ALL_TOKENS = False
+
 # -----------------------------------------------------------------------------
 # SlowFast options
 # -----------------------------------------------------------------------------
