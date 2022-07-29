@@ -792,7 +792,7 @@ class Howto100m(torch.utils.data.Dataset):
                 cap = pd.read_csv(self.caps + vidid + ".csv")
 
                 # Random sample ASR from the video
-                inds = random.sample(range(len(cap)), k=32)
+                inds = random.sample(range(len(cap)), k=min(12, len(cap)))
 
                 if hasattr(self, "caps_emb") and not self.caps_emb == None:
                     cap_emb = np.load(self.caps_emb + vidid + ".npy")[inds, :]
@@ -911,7 +911,6 @@ class Howto100m(torch.utils.data.Dataset):
                 video_clips.append(frames)
 
             video_clips = torch.stack(video_clips)
-            print("Video clips shape: ", video_clips.shape)
             # If decoding failed (wrong format, video is too short, and etc),
             # select another video.
             if video_clips is None:
@@ -927,9 +926,11 @@ class Howto100m(torch.utils.data.Dataset):
                     # let's try another one
                     index = random.randint(0, len(self._path_to_videos) - 1)
                 continue
-            print("Video clips transformed: ", video_clips.shape)
-            video_clips = video_clips.view(-1, 224, 224, 3)
-            print("Video clips transformed: ", video_clips.shape)
+
+            video_clips = video_clips.view(
+                -1, video_clips.shape[2], video_clips.shape[3], 3
+            )
+
             # Perform color normalization.
             video_clips = utils.tensor_normalize(
                 video_clips, self.cfg.DATA.MEAN, self.cfg.DATA.STD
@@ -952,10 +953,18 @@ class Howto100m(torch.utils.data.Dataset):
             if not self.cfg.MODEL.ARCH in ["vit", "swin3d"]:
                 video_clips = utils.pack_pathway_output(self.cfg, video_clips)
 
-            video_clips = video_clips.view(3, 32, -1, 224, 224)
+            video_clips = video_clips.view(3, min(len(cap), 12), -1, 224, 224)
 
-            print("Final video clip shape:", video_clips.shape)
-            sys.exit(0)
+            if video_clips.shape[1] < 12:
+                video_clips = torch.cat(
+                    (
+                        video_clips,
+                        torch.zeros(
+                            3, 12 - video_clips.shape[1], video_clips.shape[2], 224, 224
+                        ),
+                    ),
+                    dim=1,
+                )
 
             label = self._labels[index]
 

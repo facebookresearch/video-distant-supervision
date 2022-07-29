@@ -53,8 +53,6 @@ def print_computed_metrics(metrics):
     mr = metrics['MR']
     print('R@1: {:.4f} - R@5: {:.4f} - R@10: {:.4f} - Median R: {}'.format(r1, r5, r10, mr))
     
-
-
 def get_mask(shape,wikilen):
     mask = torch.zeros(shape)
     k = 0
@@ -95,6 +93,9 @@ def train_epoch(
     cur_global_batch_size = cfg.NUM_SHARDS * cfg.TRAIN.BATCH_SIZE
     num_iters = cfg.GLOBAL_BATCH_SIZE // cur_global_batch_size
     for cur_iter, (inputs, labels, indexes, meta) in enumerate(train_loader):
+        # Reshape inputs B,C,S,T,H,W -> B,C,S*T,H,W S is #steps
+        inputs = inputs.view(inputs.shape[0], inputs.shape[1], -1, inputs.shape[4], inputs.shape[5])
+
         # Transfer the data to the current GPU device.
         if cfg.NUM_GPUS:
             if isinstance(inputs, (list,)):
@@ -132,6 +133,7 @@ def train_epoch(
                mixup_alpha=cfg.MIXUP.ALPHA, cutmix_alpha=cfg.MIXUP.CUTMIX_ALPHA, cutmix_minmax=cfg.MIXUP.CUTMIX_MINMAX, prob=cfg.MIXUP.PROB, switch_prob=cfg.MIXUP.SWITCH_PROB, mode=cfg.MIXUP.MODE,
                label_smoothing=0.1, num_classes=cfg.MODEL.NUM_CLASSES)
             hard_labels = labels
+
             if not cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '':
                 with torch.no_grad():
                     text_pred = F.linear(meta['emb'], model.module.model.label_emb.to(inputs.device))
@@ -151,8 +153,6 @@ def train_epoch(
             pred, text_pred = model([inputs, meta])
             preds = F.softmax(pred, 1)
             preds = F.linear(preds, model.module.model.step2task.to(preds.device))
-            
-        
         elif cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '' and cfg.MODEL.NUM_CLASSES == 1059:
             meta = {k:meta[k].view(-1, meta[k].shape[-1]) for k in meta}
             preds = model([inputs, meta])
@@ -162,12 +162,14 @@ def train_epoch(
         if not cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '':
             if cfg.MIXUP.ENABLED:
                 loss = loss_fun(pred, labels)
-            else:    
+            else: 
+                print("label emb shape: {} meta emb shape: {}".format(model.module.model.label_emb.shape, meta['emb'].shape))   
                 if not len(cfg.TRAIN.TEXT_EMB)>1:
                     with torch.no_grad():
                         text_pred = F.softmax(text_pred,1)
                         text_pred = (text_pred.unsqueeze(1)*(text_pred.unsqueeze(1)==text_pred.topk(k=cfg.TRAIN.TOPK, dim=1)[0].unsqueeze(2)).float()).sum(1)
                         text_pred = text_pred / text_pred.sum(1, keepdim=True)
+                        print("text pred shape: ", text_pred.shape)
                 else:
                     with torch.no_grad():
                         text_pred = F.linear(F.normalize(meta['emb'],1)*4.5, F.normalize(model.module.model.label_emb.to(pred.device),1)*4.5)
@@ -178,7 +180,6 @@ def train_epoch(
                     loss = loss_fun(F.log_softmax(pred, dim=1), text_pred)
                 else:    
                     loss = - torch.mean(torch.sum(text_pred * F.log_softmax(pred, dim=1), dim=1))    
-            
         elif isinstance(labels, (dict,)) and cfg.TRAIN.DATASET == "Epickitchens":
             # Compute the loss.
             loss_verb = loss_fun(preds[0], labels['verb'])

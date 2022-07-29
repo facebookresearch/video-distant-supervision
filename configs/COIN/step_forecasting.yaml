@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved.
 TRAIN:
   ENABLE: True
-  DATASET: howto100m
+  DATASET: coin
   BATCH_SIZE: 16
   EVAL_PERIOD: 3
   CHECKPOINT_PERIOD: 3
@@ -9,8 +9,8 @@ TRAIN:
   LINEAR: True
   EPOCH_MUL: 2
 DATA:
-  PATH_TO_DATA_DIR: "./data_csv/coin_next/"
-  PATH_PREFIX: "PATH to your videos"
+  PATH_TO_DATA_DIR: "/data/home/medhini/video-distant-supervision/data_csv/coin_step/"
+  PATH_PREFIX: "/fsx/medhini/data/coin/all_videos"
   NUM_FRAMES: 8
   SAMPLING_RATE: 32
   TRAIN_JITTER_SCALES: [256, 320]
@@ -22,7 +22,8 @@ DATA:
   FIX_END: True
 TIMESFORMER:
   ATTENTION_TYPE: 'divided_space_time'
-  PRETRAINED_MODEL: 'PATH to pretrained model'
+  PRETRAINED_MODEL: '/data/home/medhini/video-distant-supervision/TimeSformer_divST_8x32_224_HowTo100M_pretrained.pth'
+  # PRETRANIED_MODEL: './step.pth'
 SOLVER:
   BASE_LR: 0.005
   LR_POLICY: steps_with_relative_lrs

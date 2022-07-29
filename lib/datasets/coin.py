@@ -134,6 +134,7 @@ class Coin(torch.utils.data.Dataset):
                 path, label, duration, start, end = path_label.split(
                     self.cfg.DATA.PATH_LABEL_SEPARATOR
                 )
+                path = path.split(".")[0]
                 for idx in range(self._num_clips):
                     self._path_to_videos.append(
                         os.path.join(self.cfg.DATA.PATH_PREFIX, path)

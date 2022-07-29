@@ -2,17 +2,17 @@
 TRAIN:
   ENABLE: True
   DATASET: howto100m
-  BATCH_SIZE: 16
+  BATCH_SIZE: 4
   EVAL_PERIOD: 5
   CHECKPOINT_PERIOD: 1
-  AUTO_RESUME: True
-  TEXT_EMB: 'PATH to processed_asr_emb_mpnet/'
-  TEXT: 'path to csv MIL-NCE_HowTo100M/howto100m_csv/'
+  AUTO_RESUME: False
+  TEXT_EMB: './processed_asr_emb_mpnet/'
+  TEXT: './howto100m_csv/'
   LABEL_EMB: "./data/mpnet_step_emb_only_headline.pth" 
   TOPK: 3
 DATA:
-  PATH_TO_DATA_DIR: "./data_csv/howto100m_full/"
-  PATH_PREFIX: "PATH to your videos"
+  PATH_TO_DATA_DIR: "./data_csv/howto100m_subset/"
+  PATH_PREFIX: "/fsx/medhini/data/howto100m/howto100m_videos"
   NUM_FRAMES: 8
   SAMPLING_RATE: 32
   TRAIN_JITTER_SCALES: [256, 320]
@@ -49,7 +49,7 @@ TEST:
 DATA_LOADER:
   NUM_WORKERS: 16
   PIN_MEMORY: True
-NUM_GPUS: 8
+NUM_GPUS: 4
 NUM_SHARDS: 1
 RNG_SEED: 0
 OUTPUT_DIR: .
