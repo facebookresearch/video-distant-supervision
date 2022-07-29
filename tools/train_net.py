@@ -14,7 +14,7 @@ import lib.utils.logging as logging
 import lib.utils.metrics as metrics
 import lib.utils.misc as misc
 import lib.visualization.tensorboard_vis as tb
-from lib.models.losses import ActLocMSELoss
+from lib.models.losses import ActLocMSELoss, MaskedStepModelingLoss
 from lib.datasets import loader
 from lib.models import build_model
 from lib.utils.meters import TrainMeter, ValMeter, EPICTrainMeter, EPICValMeter
@@ -83,12 +83,20 @@ def train_epoch(
     # Enable train mode.
     if cfg.TRAIN.LINEAR:
         model.train()
-        model.module.model.pos_drop.eval()
-        model.module.model.blocks.eval()
+        if cfg.NUM_GPUS > 1:
+            model.module.model.pos_drop.eval()
+            model.module.model.blocks.eval()
+        else:
+            model.model.pos_drop.eval()
+            model.model.blocks.eval()
     else:    
         model.train()
-    if hasattr(model.module.model, 'text_model'):
-        model.module.model.text_model.eval()
+    if cfg.NUM_GPUS > 1:
+        if hasattr(model.module.model, 'text_model'):
+            model.module.model.text_model.eval()
+    else:
+        if hasattr(model.model, 'text_model'):
+            model.mode.text_model.eval()
     train_meter.iter_tic()
     data_size = len(train_loader)
 
@@ -120,11 +128,17 @@ def train_epoch(
 
         train_meter.data_toc()
 
+        if cfg.MODEL.NUM_SEG > 1 and len(inputs.shape) == 6:
+            inputs = rearrange(inputs, 'b c m t h w -> b c (m t) h w')
+            # inputs later gets reshaped within vit.py to be (b m) c t h w
+
         # Explicitly declare reduction to mean.
         if cfg.MODEL.LOSS_FUNC == 'smooth':
             loss_fun = LabelSmoothingCrossEntropy(0.2)
         elif cfg.MODEL.LOSS_FUNC == 'kldiv':
-            loss_fun = torch.nn.KLDivLoss(reduction='batchmean')    
+            loss_fun = torch.nn.KLDivLoss(reduction='batchmean')
+        elif cfg.MODEL.LOSS_FUNC == 'msm':
+            loss_fun = MaskedStepModelingLoss(mask_ratio=cfg.MODEL.MASK_RATIO)
         elif not cfg.MIXUP.ENABLED:
             loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="mean")
         else:
@@ -134,7 +148,10 @@ def train_epoch(
             hard_labels = labels
             if not cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '':
                 with torch.no_grad():
-                    text_pred = F.linear(meta['emb'], model.module.model.label_emb.to(inputs.device))
+                    if cfg.NUM_GPUS > 1:
+                        text_pred = F.linear(meta['emb'], model.module.model.label_emb.to(inputs.device))
+                    else:
+                        text_pred = F.linear(meta['emb'], model.model.label_emb.to(inputs.device))
                     text_pred = F.softmax(text_pred,1)
                     text_pred = (text_pred.unsqueeze(1)*(text_pred.unsqueeze(1)==text_pred.topk(k=cfg.TRAIN.TOPK if hasattr(cfg.TRAIN, 'TOPK') else 5,dim=1)[0].unsqueeze(2)).float()).sum(1)
                     text_pred = text_pred / text_pred.sum(1, keepdim=True)
@@ -147,10 +164,18 @@ def train_epoch(
         if cfg.DETECTION.ENABLE:
             preds = model(inputs, meta["boxes"])
         elif not cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '':
-            meta = {k:meta[k].view(-1, meta[k].shape[-1]) for k in meta}
-            pred, text_pred = model([inputs, meta])
-            preds = F.softmax(pred, 1)
-            preds = F.linear(preds, model.module.model.step2task.to(preds.device))
+            if cfg.MODEL.LOSS_FUNC == 'msm':
+                seg_mask = loss_fun.generate_mask(inputs.shape[0], cfg.MODEL.NUM_SEG).to(inputs.device)
+                pred, text_pred = model([inputs, meta], seg_mask=seg_mask)
+                preds = None
+            else:
+                meta = {k:meta[k].view(-1, meta[k].shape[-1]) for k in meta}
+                pred, text_pred = model([inputs, meta])
+                preds = F.softmax(pred, 1)
+                if cfg.NUM_GPUS > 1:
+                    preds = F.linear(preds, model.module.model.step2task.to(preds.device))
+                else:
+                    preds = F.linear(preds, model.model.step2task.to(preds.device))
             
         
         elif cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '' and cfg.MODEL.NUM_CLASSES == 1059:
@@ -170,12 +195,19 @@ def train_epoch(
                         text_pred = text_pred / text_pred.sum(1, keepdim=True)
                 else:
                     with torch.no_grad():
-                        text_pred = F.linear(F.normalize(meta['emb'],1)*4.5, F.normalize(model.module.model.label_emb.to(pred.device),1)*4.5)
-                        text_pred = F.softmax(text_pred,1)
-                        text_pred = (text_pred.unsqueeze(1)*(text_pred.unsqueeze(1)==text_pred.topk(k=cfg.TRAIN.TOPK,dim=1)[0].unsqueeze(2)).float()).sum(1)
-                        text_pred = text_pred / text_pred.sum(1, keepdim=True)
+                        if cfg.NUM_GPUS > 1:
+                            text_pred = F.linear(F.normalize(meta['emb'], 1, dim=-1)*4.5, F.normalize(model.module.model.label_emb.to(pred.device), 1, dim=-1)*4.5)
+                        else:
+                            text_pred = F.linear(F.normalize(meta['emb'], 1, dim=-1)*4.5, F.normalize(model.model.label_emb.to(pred.device), 1, dim=-1)*4.5)
+                        text_pred = F.softmax(text_pred, dim=-1)
+                        text_pred = (text_pred.unsqueeze(-2)*(text_pred.unsqueeze(-2)==text_pred.topk(k=cfg.TRAIN.TOPK,dim=-1)[0].unsqueeze(-1)).float()).sum(-2)
+                        text_pred = text_pred / text_pred.sum(-1, keepdim=True)
                 if cfg.MODEL.LOSS_FUNC == 'kldiv':
                     loss = loss_fun(F.log_softmax(pred, dim=1), text_pred)
+                elif cfg.MODEL.LOSS_FUNC == 'msm':
+                    # Feed logits over step predictions (pred) and pseudo-labels of steps (text_pred)
+                    # into Masked Step Modeling Loss
+                    loss = loss_fun(pred, text_pred, seg_mask)
                 else:    
                     loss = - torch.mean(torch.sum(text_pred * F.log_softmax(pred, dim=1), dim=1))    
             
@@ -312,23 +344,30 @@ def train_epoch(
                     [loss] = du.all_reduce([loss])
                 loss = loss.item()
             else:
-                # Compute the errors.
-                num_topks_correct = metrics.topks_correct(preds, labels, (1, min(5,preds.shape[0])))
-                top1_err, top5_err = [
-                    (1.0 - x / preds.size(0)) * 100.0 for x in num_topks_correct
-                ]
-                # Gather all the predictions across all the devices.
-                if cfg.NUM_GPUS > 1:
-                    loss, top1_err, top5_err = du.all_reduce(
-                        [loss, top1_err, top5_err]
-                    )
+                if preds is not None:
+                    # Compute the errors.
+                    num_topks_correct = metrics.topks_correct(preds, labels, (1, min(5,preds.shape[0])))
+                    top1_err, top5_err = [
+                        (1.0 - x / preds.size(0)) * 100.0 for x in num_topks_correct
+                    ]
+                    # Gather all the predictions across all the devices.
+                    if cfg.NUM_GPUS > 1:
+                        loss, top1_err, top5_err = du.all_reduce(
+                            [loss, top1_err, top5_err]
+                        )
 
-                # Copy the stats from GPU to CPU (sync point).
-                loss, top1_err, top5_err = (
-                    loss.item(),
-                    top1_err.item(),
-                    top5_err.item(),
-                )
+                    # Copy the stats from GPU to CPU (sync point).
+                    loss, top1_err, top5_err = (
+                        loss.item(),
+                        top1_err.item(),
+                        top5_err.item(),
+                    )
+                else:
+                    if cfg.NUM_GPUS > 1:
+                        loss = du.all_reduce([loss])[0]
+                    loss = loss.item()
+                    top1_err = -1
+                    top5_err = -1
 
             # Update and log stats.
             train_meter.update_stats(
