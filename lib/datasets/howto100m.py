@@ -21,9 +21,6 @@ import pandas as pd
 import ffmpeg
 import math
 
-import os
-import random
-
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -557,8 +554,8 @@ class Howto100m(torch.utils.data.Dataset):
         import copy
 
         self.cfg = copy.deepcopy(cfg)
-        if hasattr(self.cfg.MODEL, "NUM_SEG") and self.cfg.MODEL.NUM_SEG > 0:
-            self.cfg.DATA.NUM_FRAMES *= self.cfg.MODEL.NUM_SEG
+        # if hasattr(self.cfg.MODEL, "NUM_SEG") and self.cfg.MODEL.NUM_SEG > 0:
+        #     self.cfg.DATA.NUM_FRAMES *= self.cfg.MODEL.NUM_SEG
 
         self._video_meta = {}
         self._num_retries = num_retries
@@ -677,7 +674,6 @@ class Howto100m(torch.utils.data.Dataset):
         )
         if len(tmp) > 0:
             self.labels = tmp
-            print(len(tmp))
 
     def __getitem__(self, index):
         """
@@ -791,8 +787,17 @@ class Howto100m(torch.utils.data.Dataset):
 
                 cap = pd.read_csv(self.caps + vidid + ".csv")
 
-                # Random sample ASR from the video
-                inds = random.sample(range(len(cap)), k=min(12, len(cap)))
+                # Sample ASR from the video equidistantly
+                inds = np.arange(
+                    0,
+                    len(cap),
+                    len(cap) / min(self.cfg.MODEL.NUM_SEG, len(cap)),
+                    dtype=int,
+                )
+
+                # random.sample(
+                #     range(len(cap)), k=min(self.cfg.MODEL.NUM_SEG, len(cap))
+                # )
 
                 if hasattr(self, "caps_emb") and not self.caps_emb == None:
                     cap_emb = np.load(self.caps_emb + vidid + ".npy")[inds, :]
@@ -953,18 +958,25 @@ class Howto100m(torch.utils.data.Dataset):
             if not self.cfg.MODEL.ARCH in ["vit", "swin3d"]:
                 video_clips = utils.pack_pathway_output(self.cfg, video_clips)
 
-            video_clips = video_clips.view(3, min(len(cap), 12), -1, 224, 224)
+            video_clips = video_clips.view(
+                3, min(len(cap), self.cfg.MODEL.NUM_SEG), -1, 224, 224
+            )
 
-            if video_clips.shape[1] < 12:
+            if video_clips.shape[1] < self.cfg.MODEL.NUM_SEG:
                 video_clips = torch.cat(
                     (
                         video_clips,
                         torch.zeros(
-                            3, 12 - video_clips.shape[1], video_clips.shape[2], 224, 224
+                            3,
+                            self.cfg.MODEL.NUM_SEG - video_clips.shape[1],
+                            video_clips.shape[2],
+                            224,
+                            224,
                         ),
                     ),
                     dim=1,
                 )
+            assert video_clips.shape[1] == self.cfg.MODEL.NUM_SEG
 
             label = self._labels[index]
 
@@ -974,6 +986,17 @@ class Howto100m(torch.utils.data.Dataset):
                 text["label"] = torch.tensor([1] + [0] * self.sample)
                 if hasattr(self, "caps_emb") and not self.caps_emb == None:
                     text["emb"] = cap_emb
+                    if len(text["emb"]) < self.cfg.MODEL.NUM_SEG:
+                        text["emb"] = np.concatenate(
+                            (
+                                text["emb"],
+                                np.zeros(
+                                    self.cfg.MODEL.NUM_SEG - len(text["emb"]),
+                                    text["emb"].shape[1],
+                                ),
+                            ),
+                            axis=0,
+                        )
                 return video_clips, label, index, text
 
             return video_clips, label, index, {}
