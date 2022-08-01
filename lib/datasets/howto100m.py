@@ -913,7 +913,22 @@ class Howto100m(torch.utils.data.Dataset):
                         )
                     except:
                         frames = None
+                
                 video_clips.append(frames)
+
+            if None in video_clips:
+                logger.warning(
+                    "Failed to decode video idx {} from {}; trial {}".format(
+                        index, self._path_to_videos[index], i_try
+                    )
+                )
+                if self.mode not in ["test"]:  # and i_try > self._num_retries // 4:
+                    # let's try another one
+                    index = random.randint(0, len(self._path_to_videos) - 1)
+                if self.mode in ["test"] and i_try > self._num_retries // 2:
+                    # let's try another one
+                    index = random.randint(0, len(self._path_to_videos) - 1)
+                continue
 
             video_clips = torch.stack(video_clips)
             # If decoding failed (wrong format, video is too short, and etc),
