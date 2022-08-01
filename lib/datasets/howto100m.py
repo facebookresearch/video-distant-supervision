@@ -991,8 +991,10 @@ class Howto100m(torch.utils.data.Dataset):
                             (
                                 text["emb"],
                                 np.zeros(
-                                    self.cfg.MODEL.NUM_SEG - len(text["emb"]),
-                                    text["emb"].shape[1],
+                                    (
+                                        self.cfg.MODEL.NUM_SEG - len(text["emb"]),
+                                        text["emb"].shape[1],
+                                    ),dtype=type(text["emb"][0,0])
                                 ),
                             ),
                             axis=0,
