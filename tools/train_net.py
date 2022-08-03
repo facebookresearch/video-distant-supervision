@@ -108,10 +108,6 @@ def train_epoch(
     cur_global_batch_size = cfg.NUM_SHARDS * cfg.TRAIN.BATCH_SIZE
     num_iters = cfg.GLOBAL_BATCH_SIZE // cur_global_batch_size
     for cur_iter, (inputs, labels, indexes, meta) in enumerate(train_loader):
-        # Reshape inputs B,C,S,T,H,W -> B,C,S*T,H,W S is #steps
-        inputs = inputs.view(
-            inputs.shape[0], inputs.shape[1], -1, inputs.shape[4], inputs.shape[5]
-        )
 
         # Transfer the data to the current GPU device.
         if cfg.NUM_GPUS:

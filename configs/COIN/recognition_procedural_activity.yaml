@@ -10,7 +10,7 @@ TRAIN:
   EPOCH_MUL: 4
 DATA:
   PATH_TO_DATA_DIR: "./data_csv/coin_task/"
-  PATH_PREFIX: "PATH to your videos"
+  PATH_PREFIX: "/fsx/medhini/data/coin/all_videos"
   NUM_FRAMES: 8
   SAMPLING_RATE: 32
   TRAIN_JITTER_SCALES: [256, 320]
@@ -21,7 +21,8 @@ DATA:
   DECODING_BACKEND: 'ffmpeg'
 TIMESFORMER:
   ATTENTION_TYPE: 'divided_space_time'
-  PRETRAINED_MODEL: 'PATH to pretrained model'
+  PRETRAINED_MODEL: '/data/home/medhini/video-distant-supervision/masked_step_modeling/checkpoints/checkpoint_epoch_00003.pyth'
+  # PRETRAINED_MODEL: '/data/home/medhini/video-distant-supervision/TimeSformer_divST_8x32_224_HowTo100M_pretrained.pth'
 SOLVER:
   BASE_LR: 0.005
   LR_POLICY: steps_with_relative_lrs
@@ -37,8 +38,8 @@ MODEL:
   ARCH: vit
   LOSS_FUNC: cross_entropy
   DROPOUT_RATE: 0.5
-  NUM_SEG: 8
-  EXTRA_TR: '1-space'
+  NUM_SEG: 12
+  EXTRA_TR: '2-space'
   DROP_E: 0.1
   EXTRA_POS: True
   RET_HEAD: 1
@@ -58,3 +59,6 @@ NUM_GPUS: 8
 NUM_SHARDS: 1
 RNG_SEED: 0
 OUTPUT_DIR: .
+TENSORBOARD: 
+  ENABLE: True
+  LOG_DIR: 'step_forecasting_coin'

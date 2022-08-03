@@ -29,7 +29,7 @@ def _cfg(url="", **kwargs):
         "interpolation": "bicubic",
         "mean": IMAGENET_DEFAULT_MEAN,
         "std": IMAGENET_DEFAULT_STD,
-        "first_conv": "patch_embed.proj",
+        "first_conv": "patch_egmbed.proj",
         "classifier": "head",
         **kwargs,
     }
@@ -835,16 +835,6 @@ class vit_base_patch16_224(nn.Module):
             )
         else:
             print("not loading any pretrained weights!")
-
-        # self.pos_enc = PositionalEncoding(768, 0.2)
-        encoder_layers = nn.TransformerEncoderLayer(
-            d_model=768,
-            nhead=6,
-            dropout=0.2,
-        )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers=2)
-        self.fc1 = nn.Linear(768, 64)
-        self.fc2 = nn.Linear(64, 2)
 
     def forward(self, x, seg_mask=None):
         x = self.model(x, seg_mask=seg_mask)
