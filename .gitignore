@@ -53,7 +53,7 @@ coverage.xml
 docs/_build/
 
 # Large directories
-./processed_asr_emb_mpnet
-./data_csv
-./data
-./howto100m_csv
+processed_asr_emb_mpnet
+data_csv
+data
+howto100m_csv
