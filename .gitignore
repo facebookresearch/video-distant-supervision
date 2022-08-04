@@ -56,3 +56,4 @@ docs/_build/
 ./processed_asr_emb_mpnet
 ./data_csv
 ./data
+./howto100m_csv

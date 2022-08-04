@@ -6,12 +6,14 @@ from lib.utils.parser import load_config, parse_args
 
 from tools.test_net import test
 from tools.train_net import train
-
+from tools.feature_extraction import feature_extraction
 
 def get_func(cfg):
     train_func = train
     test_func = test
-    return train_func, test_func
+    fe_func = feature_extraction
+
+    return train_func, test_func, fe_func
 
 def main():
     """
@@ -22,7 +24,7 @@ def main():
         args.output_dir = str(args.job_dir)
     cfg = load_config(args)
 
-    train, test = get_func(cfg)
+    train, test, feature_extraction = get_func(cfg)
 
     # Perform training.
     if cfg.TRAIN.ENABLE:
@@ -31,6 +33,10 @@ def main():
     # Perform multi-clip testing.
     if cfg.TEST.ENABLE:
         launch_job(cfg=cfg, init_method=args.init_method, func=test)
+    
+    # Perform feature extraction.
+    if cfg.TEST.ENABLE:
+        launch_job(cfg=cfg, init_method=args.init_method, func=feature_extraction)
 
     # Perform model visualization.
     if cfg.TENSORBOARD.ENABLE and (

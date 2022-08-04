@@ -211,6 +211,7 @@ import shutil
 import submitit
 import multiprocessing
 import sys
+from tools.feature_extraction import feature_extraction
 
 import torch
 import lib.utils.checkpoint as cu
@@ -294,13 +295,16 @@ def launch(shard_id, num_shards, cfg, init_method):
         shard_id, num_shards, cfg
     ])
 
-    train, test = get_func(cfg)
+    train, test, feature_extraction = get_func(cfg)
     # Launch job.
     if cfg.TRAIN.ENABLE:
         launch_job(cfg=cfg, init_method=init_method, func=train)
 
     if cfg.TEST.ENABLE:
         launch_job(cfg=cfg, init_method=init_method, func=test)
+
+    if cfg.FEAT_EXT.ENABLE:
+        launch_job(cfg=cfg, init_method=init_method, func=feature_extraction)
 
 
 class Trainer(object):

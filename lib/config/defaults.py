@@ -132,6 +132,26 @@ _C.TEST.SAVE_PREDICT_PATH = ""
 
 _C.TEST.SPLIT = ""
 
+# ---------------------------------------------------------------------------- #
+# Feature extraction options
+# ---------------------------------------------------------------------------- #
+_C.FEAT_EXT = CfgNode()
+
+# If True test the model, else skip the testing.
+_C.FEAT_EXT.ENABLE = True
+
+# Dataset for testing.
+_C.FEAT_EXT.DATASET = "coin"
+
+# Total mini-batch size
+_C.FEAT_EXT.BATCH_SIZE = 64
+
+# Path to the checkpoint to load the initial weight.
+_C.FEAT_EXT.CHECKPOINT_FILE_PATH = ""
+
+# Path to saving features.
+_C.FEAT_EXT.SAVE_FEATS_PATH = ""
+
 
 # -----------------------------------------------------------------------------
 # ResNet options

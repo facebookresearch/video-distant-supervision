@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates. All Rights Reserved.
 TRAIN:
   ENABLE: True
-  DATASET: howto100m
+  DATASET: howto100m_msm
   BATCH_SIZE: 8
   EVAL_PERIOD: 5
   CHECKPOINT_PERIOD: 1
@@ -47,7 +47,7 @@ MODEL:
   APPLY_HEAD_CLS_TO_ALL_TOKENS: True
 TEST:
   ENABLE: True
-  DATASET: howto100m
+  DATASET: howto100m_msm
   BATCH_SIZE: 16
   NUM_ENSEMBLE_VIEWS: 48
   NUM_SPATIAL_CROPS: 1
