@@ -28,45 +28,6 @@ def check_time(s1, e1, s2, e2):
     return max(min(e1, e2) - max(s1, s2), 0)
 
 
-def get_video(video_path, start, end, number_frames):
-    
-    cmd = (
-        ffmpeg
-        .input(video_path, ss=start, t=end-start)
-        .filter('fps', fps=math.ceil(number_frames/(end-start)))
-    )
-    cmd = (
-            cmd.filter('scale', 640, 360)
-        )
-    out, _ = (
-        cmd.output('pipe:', format='rawvideo', pix_fmt='rgb24')
-        .run(capture_stdout=False, quiet=True)
-    )
-    
-    video = np.frombuffer(out, np.uint8).reshape([-1, 360, 640, 3])
-    video2 = torch.tensor(video)
-    video2 = temporal_sampling(video2, 0, video2.shape[0], number_frames)
-    return video2  
-
-def temporal_sampling(frames, start_idx, end_idx, num_samples):
-    """
-    Given the start and end frame index, sample num_samples frames between
-    the start and end with equal interval.
-    Args:
-        frames (tensor): a tensor of video frames, dimension is
-            `num video frames` x `channel` x `height` x `width`.
-        start_idx (int): the index of the start frame.
-        end_idx (int): the index of the end frame.
-        num_samples (int): number of frames to sample.
-    Returns:
-        frames (tersor): a tensor of temporal sampled video frames, dimension is
-            `num clip frames` x `channel` x `height` x `width`.
-    """
-    index = torch.linspace(start_idx, end_idx, num_samples)
-    index = torch.clamp(index, 0, frames.shape[0] - 1).long()
-    frames = torch.index_select(frames, 0, index)
-    return frames
-
 def get_start_end_idx(video_size, clip_size, clip_idx, num_clips):
     """
     Sample a clip of size clip_size from a video of size video_size and
@@ -96,10 +57,11 @@ def get_start_end_idx(video_size, clip_size, clip_idx, num_clips):
         start_idx = delta * clip_idx / num_clips
     end_idx = start_idx + clip_size - 1
     return start_idx, end_idx
+return len(self._path_to_videos)
 
 
 @DATASET_REGISTRY.register()
-class Howto100m(torch.utils.data.Dataset):
+class Howto100m_MSM(torch.utils.data.Dataset):
     """
     Kinetics video loader. Construct the Kinetics video loader, then sample
     clips from the videos. For training and validation, a single clip is
@@ -139,8 +101,8 @@ class Howto100m(torch.utils.data.Dataset):
         import copy
 
         self.cfg = copy.deepcopy(cfg)
-        if hasattr(self.cfg.MODEL, "NUM_SEG") and self.cfg.MODEL.NUM_SEG > 0:
-            self.cfg.DATA.NUM_FRAMES *= self.cfg.MODEL.NUM_SEG
+        # if hasattr(self.cfg.MODEL, "NUM_SEG") and self.cfg.MODEL.NUM_SEG > 0:
+        #     self.cfg.DATA.NUM_FRAMES *= self.cfg.MODEL.NUM_SEG
 
         self._video_meta = {}
         self._num_retries = num_retries
@@ -227,7 +189,7 @@ class Howto100m(torch.utils.data.Dataset):
                     path, label, duration, start, end, text = path_label.split(
                         self.cfg.DATA.PATH_LABEL_SEPARATOR
                     )
-                path = path.split(".")[0]
+
                 for idx in range(self._num_clips):
                     self._path_to_videos.append(
                         os.path.join(self.cfg.DATA.PATH_PREFIX, path)
@@ -259,7 +221,6 @@ class Howto100m(torch.utils.data.Dataset):
         )
         if len(tmp) > 0:
             self.labels = tmp
-            print(len(tmp))
 
     def __getitem__(self, index):
         """
@@ -369,53 +330,54 @@ class Howto100m(torch.utils.data.Dataset):
             if (start == None or type(self.caps) == type(" ")) and not (
                 self.caps == None and self.labels == None
             ):
-                print("Index here: ", index)
                 vidid = self._path_to_videos[index].split("/")[-1].split(".")[0]
 
                 cap = pd.read_csv(self.caps + vidid + ".csv")
 
-                # Random ASR sentence gets chosen here
-                if start == None:
-                    ind = random.randint(0, len(cap) - 1)
-                else:
-                    temp = []
-                    for i in range(len(cap)):
-                        temp.append(
-                            check_time(
-                                start, end, cap["start"].values[i], cap["end"].values[i]
-                            )
-                        )
-                    ind = np.argmax(temp)
+                # Sample ASR from the video equidistantly
+                inds = np.arange(
+                    0,
+                    len(cap),
+                    len(cap) / min(self.cfg.MODEL.NUM_SEG, len(cap)),
+                    dtype=int,
+                )
+
+                # random.sample(
+                #     range(len(cap)), k=min(self.cfg.MODEL.NUM_SEG, len(cap))
+                # )
 
                 if hasattr(self, "caps_emb") and not self.caps_emb == None:
-                    cap_emb = np.load(self.caps_emb + vidid + ".npy")[ind, :]
+                    cap_emb = np.load(self.caps_emb + vidid + ".npy")[inds, :]
                 else:
                     cap_emb = None
-                if hasattr(self, "min_len") and self.min_len > 0:
-                    mi = 0
-                    q = cap["text"].values[ind]
-                    q = q if isinstance(q, str) else " "
-                    s = cap["start"].values[ind]
-                    e = cap["end"].values[ind]
-                    while len(q.split(" ")) < self.min_len:
-                        if ind - mi > 0 and isinstance(
-                            cap["text"].values[ind - mi], str
-                        ):
-                            q = cap["text"].values[ind - mi] + " " + q
-                            s = cap["start"].values[ind - mi]
-                        if ind + mi < len(cap) and isinstance(
-                            cap["text"].values[ind + mi], str
-                        ):
-                            q = q + " " + cap["text"].values[ind + mi]
-                            e = cap["end"].values[ind + mi]
-                        mi += 1
-                        if not ind - mi > 0 and not ind + mi < len(cap):
-                            break
-                    cap["text"].values[ind] = q
-                    cap["start"].values[ind] = s
-                    cap["end"].values[ind] = e
+
+                for ind in inds:
+                    if hasattr(self, "min_len") and self.min_len > 0:
+                        mi = 0
+                        q = cap["text"].values[ind]
+                        q = q if isinstance(q, str) else " "
+                        s = cap["start"].values[ind]
+                        e = cap["end"].values[ind]
+                        while len(q.split(" ")) < self.min_len:
+                            if ind - mi > 0 and isinstance(
+                                cap["text"].values[ind - mi], str
+                            ):
+                                q = cap["text"].values[ind - mi] + " " + q
+                                s = cap["start"].values[ind - mi]
+                            if ind + mi < len(cap) and isinstance(
+                                cap["text"].values[ind + mi], str
+                            ):
+                                q = q + " " + cap["text"].values[ind + mi]
+                                e = cap["end"].values[ind + mi]
+                            mi += 1
+                            if not ind - mi > 0 and not ind + mi < len(cap):
+                                break
+                        cap["text"].values[ind] = q
+                        cap["start"].values[ind] = s
+                        cap["end"].values[ind] = e
+
                 if self.sample < 1 or (not "train" in self.mode):
-                    sen = cap["text"].values[ind]
+                    sen = cap["text"].values[inds]
                     if not type(sen) == type(" ") or len(sen) == 0:
                         sen = " "
                     text = self.tokenizer.encode_plus(
@@ -427,75 +389,81 @@ class Howto100m(torch.utils.data.Dataset):
                         return_tensors="pt",
                     )
 
-                start, end = cap["start"].values[ind], cap["end"].values[ind]
-            if start == None:
-                start, end = get_start_end_idx(
-                    duration,
-                    self.cfg.DATA.FD,
-                    temporal_sample_index,
-                    self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
-                )
-            if end - start < self.cfg.DATA.FD - 1:
-                start = max((end + start) / 2.0 - self.cfg.DATA.FD / 2.0, 0)
-                end = min(start + self.cfg.DATA.FD, duration)
-            try:
-                if end - start > self.cfg.DATA.NUM_FRAMES and self.cfg.DATA.FD == 0.0:
-                    new_end = (end + start) / 2.0 + self.cfg.DATA.NUM_FRAMES / 2.0
-                    new_start = (end + start) / 2.0 - self.cfg.DATA.NUM_FRAMES / 2.0
-                    start = new_start
-                    end = new_end
-                elif self.cfg.DATA.FD > 0.0 and self.cfg.DATA.FD < end - start:
-                    startb, endb = start, end
-                    start, end = get_start_end_idx(
-                        end - start,
-                        self.cfg.DATA.FD,
-                        temporal_sample_index,
-                        self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
-                    )
-                    start += startb
-                    end += startb
-            except:
-                end = end
-            if hasattr(self.cfg.DATA, "FIX_END") and self.cfg.DATA.FIX_END:
-                start = self._start[index]
-                end = self._end[index]
-                if self.cfg.DATA.FD < end - start:
-                    start, end = get_start_end_idx(
-                        end - start,
-                        self.cfg.DATA.FD,
-                        temporal_sample_index,
-                        self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
-                    )
+                starts, ends = cap["start"].values[inds], cap["end"].values[inds]
 
-            if not self.cfg.DATA.DECODING_BACKEND == "ffmpeg":
-                frames = decoder.decode(
-                    video_container,
-                    sampling_rate,
-                    self.cfg.DATA.NUM_FRAMES,
-                    temporal_sample_index,
-                    self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
-                    video_meta=self._video_meta[index],
-                    target_fps=self.cfg.DATA.TARGET_FPS,
-                    backend=self.cfg.DATA.DECODING_BACKEND,
-                    max_spatial_scale=min_scale,
-                    duration=duration,
-                    start=start,
-                    end=end,
-                )
-            else:
+            video_clips = []
+            for i, start in enumerate(starts):
+                end = ends[i]
+                if start == None:
+                    start, end = get_start_end_idx(
+                        duration,
+                        self.cfg.DATA.FD,
+                        temporal_sample_index,
+                        self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
+                    )
+                if end - start < self.cfg.DATA.FD - 1:
+                    start = max((end + start) / 2.0 - self.cfg.DATA.FD / 2.0, 0)
+                    end = min(start + self.cfg.DATA.FD, duration)
                 try:
-                    frames = get_video(
-                        self._path_to_videos[index],
-                        start,
-                        end,
-                        self.cfg.DATA.NUM_FRAMES,
-                    )
+                    if (
+                        end - start > self.cfg.DATA.NUM_FRAMES
+                        and self.cfg.DATA.FD == 0.0
+                    ):
+                        new_end = (end + start) / 2.0 + self.cfg.DATA.NUM_FRAMES / 2.0
+                        new_start = (end + start) / 2.0 - self.cfg.DATA.NUM_FRAMES / 2.0
+                        start = new_start
+                        end = new_end
+                    elif self.cfg.DATA.FD > 0.0 and self.cfg.DATA.FD < end - start:
+                        startb, endb = start, end
+                        start, end = get_start_end_idx(
+                            end - start,
+                            self.cfg.DATA.FD,
+                            temporal_sample_index,
+                            self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
+                        )
+                        start += startb
+                        end += startb
                 except:
-                    frames = None
+                    end = end
+                if hasattr(self.cfg.DATA, "FIX_END") and self.cfg.DATA.FIX_END:
+                    start = self._start[index]
+                    end = self._end[index]
+                    if self.cfg.DATA.FD < end - start:
+                        start, end = get_start_end_idx(
+                            end - start,
+                            self.cfg.DATA.FD,
+                            temporal_sample_index,
+                            self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
+                        )
+                if not self.cfg.DATA.DECODING_BACKEND == "ffmpeg":
+                    frames = decoder.decode(
+                        video_container,
+                        sampling_rate,
+                        self.cfg.DATA.NUM_FRAMES,
+                        temporal_sample_index,
+                        self.cfg.TEST.NUM_ENSEMBLE_VIEWS,
+                        video_meta=self._video_meta[index],
+                        target_fps=self.cfg.DATA.TARGET_FPS,
+                        backend=self.cfg.DATA.DECODING_BACKEND,
+                        max_spatial_scale=min_scale,
+                        duration=duration,
+                        start=start,
+                        end=end,
+                    )
+                else:
+                    try:
+                        frames = get_video(
+                            self._path_to_videos[index],
+                            start,
+                            end,
+                            self.cfg.DATA.NUM_FRAMES,
+                        )
+                    except:
+                        frames = None
+                
+                video_clips.append(frames)
 
-            # If decoding failed (wrong format, video is too short, and etc),
-            # select another video.
-            if frames is None:
+            if None in video_clips:
                 logger.warning(
                     "Failed to decode video idx {} from {}; trial {}".format(
                         index, self._path_to_videos[index], i_try
@@ -508,16 +476,39 @@ class Howto100m(torch.utils.data.Dataset):
                     # let's try another one
                     index = random.randint(0, len(self._path_to_videos) - 1)
                 continue
-            # Perform color normalization.
-            frames = utils.tensor_normalize(
-                frames, self.cfg.DATA.MEAN, self.cfg.DATA.STD
+
+            video_clips = torch.stack(video_clips)
+            # If decoding failed (wrong format, video is too short, and etc),
+            # select another video.
+            if video_clips is None:
+                logger.warning(
+                    "Failed to decode video idx {} from {}; trial {}".format(
+                        index, self._path_to_videos[index], i_try
+                    )
+                )
+                if self.mode not in ["test"]:  # and i_try > self._num_retries // 4:
+                    # let's try another one
+                    index = random.randint(0, len(self._path_to_videos) - 1)
+                if self.mode in ["test"] and i_try > self._num_retries // 2:
+                    # let's try another one
+                    index = random.randint(0, len(self._path_to_videos) - 1)
+                continue
+
+            video_clips = video_clips.view(
+                -1, video_clips.shape[2], video_clips.shape[3], 3
             )
+
+            # Perform color normalization.
+            video_clips = utils.tensor_normalize(
+                video_clips, self.cfg.DATA.MEAN, self.cfg.DATA.STD
+            )
+
             # T H W C -> C T H W.
-            frames = frames.permute(3, 0, 1, 2)
+            video_clips = video_clips.permute(3, 0, 1, 2)
 
             # Perform data augmentation.
-            frames = utils.spatial_sampling(
-                frames,
+            video_clips = utils.spatial_sampling(
+                video_clips,
                 spatial_idx=spatial_sample_index,
                 min_scale=min_scale,
                 max_scale=max_scale,
@@ -526,10 +517,30 @@ class Howto100m(torch.utils.data.Dataset):
                 inverse_uniform_sampling=self.cfg.DATA.INV_UNIFORM_SAMPLE,
             )
 
-            label = self._labels[index]
-
             if not self.cfg.MODEL.ARCH in ["vit", "swin3d"]:
-                frames = utils.pack_pathway_output(self.cfg, frames)
+                video_clips = utils.pack_pathway_output(self.cfg, video_clips)
+
+            video_clips = video_clips.view(
+                3, min(len(cap), self.cfg.MODEL.NUM_SEG), -1, 224, 224
+            )
+
+            if video_clips.shape[1] < self.cfg.MODEL.NUM_SEG:
+                video_clips = torch.cat(
+                    (
+                        video_clips,
+                        torch.zeros(
+                            3,
+                            self.cfg.MODEL.NUM_SEG - video_clips.shape[1],
+                            video_clips.shape[2],
+                            224,
+                            224,
+                        ),
+                    ),
+                    dim=1,
+                )
+            assert video_clips.shape[1] == self.cfg.MODEL.NUM_SEG
+
+            label = self._labels[index]
 
             if self.textind:
                 if text == None:
@@ -537,9 +548,22 @@ class Howto100m(torch.utils.data.Dataset):
                 text["label"] = torch.tensor([1] + [0] * self.sample)
                 if hasattr(self, "caps_emb") and not self.caps_emb == None:
                     text["emb"] = cap_emb
-                return frames, label, index, text
+                    if len(text["emb"]) < self.cfg.MODEL.NUM_SEG:
+                        text["emb"] = np.concatenate(
+                            (
+                                text["emb"],
+                                np.zeros(
+                                    (
+                                        self.cfg.MODEL.NUM_SEG - len(text["emb"]),
+                                        text["emb"].shape[1],
+                                    ),dtype=type(text["emb"][0,0])
+                                ),
+                            ),
+                            axis=0,
+                        )
+                return video_clips, label, index, text
 
-            return frames, label, index, {}
+            return video_clips, label, index, {}
 
     def __len__(self):
         """
@@ -550,3 +574,39 @@ class Howto100m(torch.utils.data.Dataset):
             return len(self._path_to_videos) * self.em
         else:
             return len(self._path_to_videos)
+
+
+def get_video(video_path, start, end, number_frames):
+
+    cmd = ffmpeg.input(video_path, ss=start, t=end - start).filter(
+        "fps", fps=math.ceil(number_frames / (end - start))
+    )
+    cmd = cmd.filter("scale", 640, 360)
+    out, _ = cmd.output("pipe:", format="rawvideo", pix_fmt="rgb24").run(
+        capture_stdout=False, quiet=True
+    )
+
+    video = np.frombuffer(out, np.uint8).reshape([-1, 360, 640, 3])
+    video2 = torch.tensor(video)
+    video2 = temporal_sampling(video2, 0, video2.shape[0], number_frames)
+    return video2
+
+
+def temporal_sampling(frames, start_idx, end_idx, num_samples):
+    """
+    Given the start and end frame index, sample num_samples frames between
+    the start and end with equal interval.
+    Args:
+        frames (tensor): a tensor of video frames, dimension is
+            `num video frames` x `channel` x `height` x `width`.
+        start_idx (int): the index of the start frame.
+        end_idx (int): the index of the end frame.
+        num_samples (int): number of frames to sample.
+    Returns:
+        frames (tersor): a tensor of temporal sampled video frames, dimension is
+            `num clip frames` x `channel` x `height` x `width`.
+    """
+    index = torch.linspace(start_idx, end_idx, num_samples)
+    index = torch.clamp(index, 0, frames.shape[0] - 1).long()
+    frames = torch.index_select(frames, 0, index)
+    return frames

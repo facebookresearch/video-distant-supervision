@@ -48,7 +48,7 @@ source activate distant
 
 Then, install the following packages:
 
-- torchvision: `pip install torchvision` or `conda install torchvision -c pytorch`
+- torchvision: `conda install pytorch torchvision cudatoolkit=11.3 -c pytorch`
 - [fvcore](https://github.com/facebookresearch/fvcore/): `pip install 'git+https://github.com/facebookresearch/fvcore'`
 - simplejson: `pip install simplejson`
 - einops: `pip install einops`

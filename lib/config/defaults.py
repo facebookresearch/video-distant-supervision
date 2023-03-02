@@ -132,6 +132,26 @@ _C.TEST.SAVE_PREDICT_PATH = ""
 
 _C.TEST.SPLIT = ""
 
+# ---------------------------------------------------------------------------- #
+# Feature extraction options
+# ---------------------------------------------------------------------------- #
+_C.FEAT_EXT = CfgNode()
+
+# If True test the model, else skip the testing.
+_C.FEAT_EXT.ENABLE = True
+
+# Dataset for testing.
+_C.FEAT_EXT.DATASET = "coin"
+
+# Total mini-batch size
+_C.FEAT_EXT.BATCH_SIZE = 64
+
+# Path to the checkpoint to load the initial weight.
+_C.FEAT_EXT.CHECKPOINT_FILE_PATH = ""
+
+# Path to saving features.
+_C.FEAT_EXT.SAVE_FEATS_PATH = ""
+
 
 # -----------------------------------------------------------------------------
 # ResNet options
@@ -288,6 +308,12 @@ _C.MODEL.RET_POS = False
 _C.MODEL.RET_POS_MUL = False
 
 _C.MODEL.DROP_PATH = 0.1
+
+# If set, add a mask token parameter to the model and use this mask ratio in
+# masking loss
+_C.MODEL.MASK_RATIO = 0.
+
+_C.MODEL.APPLY_HEAD_CLS_TO_ALL_TOKENS = False
 
 # -----------------------------------------------------------------------------
 # SlowFast options

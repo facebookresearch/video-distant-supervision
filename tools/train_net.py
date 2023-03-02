@@ -14,13 +14,13 @@ import lib.utils.logging as logging
 import lib.utils.metrics as metrics
 import lib.utils.misc as misc
 import lib.visualization.tensorboard_vis as tb
-from lib.models.losses import ActLocMSELoss
+from lib.models.losses import ActLocMSELoss, MaskedStepModelingLoss
 from lib.datasets import loader
 from lib.models import build_model
 from lib.utils.meters import TrainMeter, ValMeter, EPICTrainMeter, EPICValMeter
 from lib.utils.multigrid import MultigridSchedule
 
-#from timm.data import Mixup
+# from timm.data import Mixup
 from lib.datasets import Mixup
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from einops import rearrange, reduce, repeat
@@ -31,6 +31,7 @@ logger = logging.get_logger(__name__)
 
 allgather = du.AllGather.apply
 
+
 def compute_metrics(x):
     sx = np.sort(-x, axis=1)
     d = np.diag(-x)
@@ -39,29 +40,33 @@ def compute_metrics(x):
     ind = np.where(ind == 0)
     ind = ind[1]
     metrics = {}
-    metrics['R1'] = float(np.sum(ind == 0)) / len(ind)
-    metrics['R5'] = float(np.sum(ind < 5)) / len(ind)
-    metrics['R10'] = float(np.sum(ind < 10)) / len(ind)
-    metrics['MR'] = np.median(ind) + 1
+    metrics["R1"] = float(np.sum(ind == 0)) / len(ind)
+    metrics["R5"] = float(np.sum(ind < 5)) / len(ind)
+    metrics["R10"] = float(np.sum(ind < 10)) / len(ind)
+    metrics["MR"] = np.median(ind) + 1
     return metrics
 
 
 def print_computed_metrics(metrics):
-    r1 = metrics['R1']
-    r5 = metrics['R5']
-    r10 = metrics['R10']
-    mr = metrics['MR']
-    print('R@1: {:.4f} - R@5: {:.4f} - R@10: {:.4f} - Median R: {}'.format(r1, r5, r10, mr))
-    
+    r1 = metrics["R1"]
+    r5 = metrics["R5"]
+    r10 = metrics["R10"]
+    mr = metrics["MR"]
+    print(
+        "R@1: {:.4f} - R@5: {:.4f} - R@10: {:.4f} - Median R: {}".format(
+            r1, r5, r10, mr
+        )
+    )
 
 
-def get_mask(shape,wikilen):
+def get_mask(shape, wikilen):
     mask = torch.zeros(shape)
     k = 0
     for i in range(shape[0]):
-        mask[i,k:k+wikilen[i]] = torch.ones(wikilen[i])
-        k+=wikilen[i]
+        mask[i, k : k + wikilen[i]] = torch.ones(wikilen[i])
+        k += wikilen[i]
     return mask
+
 
 def train_epoch(
     train_loader, model, optimizer, train_meter, cur_epoch, cfg, writer=None
@@ -83,18 +88,27 @@ def train_epoch(
     # Enable train mode.
     if cfg.TRAIN.LINEAR:
         model.train()
-        model.module.model.pos_drop.eval()
-        model.module.model.blocks.eval()
-    else:    
+        if cfg.NUM_GPUS > 1:
+            model.module.model.pos_drop.eval()
+            model.module.model.blocks.eval()
+        else:
+            model.model.pos_drop.eval()
+            model.model.blocks.eval()
+    else:
         model.train()
-    if hasattr(model.module.model, 'text_model'):
-        model.module.model.text_model.eval()
+    if cfg.NUM_GPUS > 1:
+        if hasattr(model.module.model, "text_model"):
+            model.module.model.text_model.eval()
+    else:
+        if hasattr(model.model, "text_model"):
+            model.mode.text_model.eval()
     train_meter.iter_tic()
     data_size = len(train_loader)
 
     cur_global_batch_size = cfg.NUM_SHARDS * cfg.TRAIN.BATCH_SIZE
     num_iters = cfg.GLOBAL_BATCH_SIZE // cur_global_batch_size
     for cur_iter, (inputs, labels, indexes, meta) in enumerate(train_loader):
+
         # Transfer the data to the current GPU device.
         if cfg.NUM_GPUS:
             if isinstance(inputs, (list,)):
@@ -113,85 +127,167 @@ def train_epoch(
                             val[i] = val[i].cuda(non_blocking=True)
                 else:
                     meta[key] = val.cuda(non_blocking=True)
-        indexes=indexes.cuda(non_blocking=True)
+        indexes = indexes.cuda(non_blocking=True)
         # Update the learning rate.
         lr = optim.get_epoch_lr(cur_epoch + float(cur_iter) / data_size, cfg)
         optim.set_lr(optimizer, lr)
 
         train_meter.data_toc()
 
+        if cfg.MODEL.NUM_SEG > 1 and len(inputs.shape) == 6:
+            inputs = rearrange(inputs, "b c m t h w -> b c (m t) h w")
+            # inputs later gets reshaped within vit.py to be (b m) c t h w
+
         # Explicitly declare reduction to mean.
-        if cfg.MODEL.LOSS_FUNC == 'smooth':
+        if cfg.MODEL.LOSS_FUNC == "smooth":
             loss_fun = LabelSmoothingCrossEntropy(0.2)
-        elif cfg.MODEL.LOSS_FUNC == 'kldiv':
-            loss_fun = torch.nn.KLDivLoss(reduction='batchmean')    
+        elif cfg.MODEL.LOSS_FUNC == "kldiv":
+            loss_fun = torch.nn.KLDivLoss(reduction="batchmean")
+        elif cfg.MODEL.LOSS_FUNC == "msm":
+            loss_fun = MaskedStepModelingLoss(mask_ratio=cfg.MODEL.MASK_RATIO)
         elif not cfg.MIXUP.ENABLED:
             loss_fun = losses.get_loss_func(cfg.MODEL.LOSS_FUNC)(reduction="mean")
         else:
             mixup_fn = Mixup(
-               mixup_alpha=cfg.MIXUP.ALPHA, cutmix_alpha=cfg.MIXUP.CUTMIX_ALPHA, cutmix_minmax=cfg.MIXUP.CUTMIX_MINMAX, prob=cfg.MIXUP.PROB, switch_prob=cfg.MIXUP.SWITCH_PROB, mode=cfg.MIXUP.MODE,
-               label_smoothing=0.1, num_classes=cfg.MODEL.NUM_CLASSES)
+                mixup_alpha=cfg.MIXUP.ALPHA,
+                cutmix_alpha=cfg.MIXUP.CUTMIX_ALPHA,
+                cutmix_minmax=cfg.MIXUP.CUTMIX_MINMAX,
+                prob=cfg.MIXUP.PROB,
+                switch_prob=cfg.MIXUP.SWITCH_PROB,
+                mode=cfg.MIXUP.MODE,
+                label_smoothing=0.1,
+                num_classes=cfg.MODEL.NUM_CLASSES,
+            )
             hard_labels = labels
-            if not cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '':
+
+            if not cfg.TRAIN.LABEL_EMB == "" and not cfg.TRAIN.TEXT == "":
                 with torch.no_grad():
-                    text_pred = F.linear(meta['emb'], model.module.model.label_emb.to(inputs.device))
-                    text_pred = F.softmax(text_pred,1)
-                    text_pred = (text_pred.unsqueeze(1)*(text_pred.unsqueeze(1)==text_pred.topk(k=cfg.TRAIN.TOPK if hasattr(cfg.TRAIN, 'TOPK') else 5,dim=1)[0].unsqueeze(2)).float()).sum(1)
+                    if cfg.NUM_GPUS > 1:
+                        text_pred = F.linear(
+                            meta["emb"], model.module.model.label_emb.to(inputs.device)
+                        )
+                    else:
+                        text_pred = F.linear(
+                            meta["emb"], model.model.label_emb.to(inputs.device)
+                        )
+                    text_pred = F.softmax(text_pred, 1)
+                    text_pred = (
+                        text_pred.unsqueeze(1)
+                        * (
+                            text_pred.unsqueeze(1)
+                            == text_pred.topk(
+                                k=cfg.TRAIN.TOPK if hasattr(cfg.TRAIN, "TOPK") else 5,
+                                dim=1,
+                            )[0].unsqueeze(2)
+                        ).float()
+                    ).sum(1)
                     text_pred = text_pred / text_pred.sum(1, keepdim=True)
                 inputs, labels = mixup_fn(inputs, text_pred)
-            else:    
+            else:
                 inputs, labels = mixup_fn(inputs, labels)
-                 
+
             loss_fun = SoftTargetCrossEntropy()
 
         if cfg.DETECTION.ENABLE:
             preds = model(inputs, meta["boxes"])
-        elif not cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '':
-            meta = {k:meta[k].view(-1, meta[k].shape[-1]) for k in meta}
-            pred, text_pred = model([inputs, meta])
-            preds = F.softmax(pred, 1)
-            preds = F.linear(preds, model.module.model.step2task.to(preds.device))
-            
-        
-        elif cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '' and cfg.MODEL.NUM_CLASSES == 1059:
-            meta = {k:meta[k].view(-1, meta[k].shape[-1]) for k in meta}
+        elif not cfg.TRAIN.LABEL_EMB == "" and not cfg.TRAIN.TEXT == "":
+            if cfg.MODEL.LOSS_FUNC == "msm":
+                seg_mask = loss_fun.generate_mask(
+                    inputs.shape[0], cfg.MODEL.NUM_SEG
+                ).to(inputs.device)
+                pred, text_pred = model([inputs, meta], seg_mask=seg_mask)
+                preds = None
+            else:
+                meta = {k: meta[k].view(-1, meta[k].shape[-1]) for k in meta}
+                pred, text_pred = model([inputs, meta])
+                preds = F.softmax(pred, 1)
+                if cfg.NUM_GPUS > 1:
+                    preds = F.linear(
+                        preds, model.module.model.step2task.to(preds.device)
+                    )
+                else:
+                    preds = F.linear(preds, model.model.step2task.to(preds.device))
+
+        elif (
+            cfg.TRAIN.LABEL_EMB == ""
+            and not cfg.TRAIN.TEXT == ""
+            and cfg.MODEL.NUM_CLASSES == 1059
+        ):
+            meta = {k: meta[k].view(-1, meta[k].shape[-1]) for k in meta}
             preds = model([inputs, meta])
         else:
             preds = model(inputs)
 
-        if not cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '':
+        if not cfg.TRAIN.LABEL_EMB == "" and not cfg.TRAIN.TEXT == "":
             if cfg.MIXUP.ENABLED:
                 loss = loss_fun(pred, labels)
-            else:    
-                if not len(cfg.TRAIN.TEXT_EMB)>1:
+            else:
+                if not len(cfg.TRAIN.TEXT_EMB) > 1:
                     with torch.no_grad():
-                        text_pred = F.softmax(text_pred,1)
-                        text_pred = (text_pred.unsqueeze(1)*(text_pred.unsqueeze(1)==text_pred.topk(k=cfg.TRAIN.TOPK, dim=1)[0].unsqueeze(2)).float()).sum(1)
+                        text_pred = F.softmax(text_pred, 1)
+                        text_pred = (
+                            text_pred.unsqueeze(1)
+                            * (
+                                text_pred.unsqueeze(1)
+                                == text_pred.topk(k=cfg.TRAIN.TOPK, dim=1)[0].unsqueeze(
+                                    2
+                                )
+                            ).float()
+                        ).sum(1)
                         text_pred = text_pred / text_pred.sum(1, keepdim=True)
                 else:
                     with torch.no_grad():
-                        text_pred = F.linear(F.normalize(meta['emb'],1)*4.5, F.normalize(model.module.model.label_emb.to(pred.device),1)*4.5)
-                        text_pred = F.softmax(text_pred,1)
-                        text_pred = (text_pred.unsqueeze(1)*(text_pred.unsqueeze(1)==text_pred.topk(k=cfg.TRAIN.TOPK,dim=1)[0].unsqueeze(2)).float()).sum(1)
-                        text_pred = text_pred / text_pred.sum(1, keepdim=True)
-                if cfg.MODEL.LOSS_FUNC == 'kldiv':
+                        if cfg.NUM_GPUS > 1:
+                            text_pred = F.linear(
+                                F.normalize(meta["emb"], 1, dim=-1) * 4.5,
+                                F.normalize(
+                                    model.module.model.label_emb.to(pred.device),
+                                    1,
+                                    dim=-1,
+                                )
+                                * 4.5,
+                            )
+                        else:
+                            text_pred = F.linear(
+                                F.normalize(meta["emb"], 1, dim=-1) * 4.5,
+                                F.normalize(
+                                    model.model.label_emb.to(pred.device), 1, dim=-1
+                                )
+                                * 4.5,
+                            )
+                        text_pred = F.softmax(text_pred, dim=-1)
+                        text_pred = (
+                            text_pred.unsqueeze(-2)
+                            * (
+                                text_pred.unsqueeze(-2)
+                                == text_pred.topk(k=cfg.TRAIN.TOPK, dim=-1)[
+                                    0
+                                ].unsqueeze(-1)
+                            ).float()
+                        ).sum(-2)
+                        text_pred = text_pred / text_pred.sum(-1, keepdim=True)
+                if cfg.MODEL.LOSS_FUNC == "kldiv":
                     loss = loss_fun(F.log_softmax(pred, dim=1), text_pred)
-                else:    
-                    loss = - torch.mean(torch.sum(text_pred * F.log_softmax(pred, dim=1), dim=1))    
-            
+                elif cfg.MODEL.LOSS_FUNC == "msm":
+                    # Feed logits over step predictions (pred) and pseudo-labels of steps (text_pred)
+                    # into Masked Step Modeling Loss
+                    loss = loss_fun(pred, text_pred, seg_mask)
+                else:
+                    loss = -torch.mean(
+                        torch.sum(text_pred * F.log_softmax(pred, dim=1), dim=1)
+                    )
         elif isinstance(labels, (dict,)) and cfg.TRAIN.DATASET == "Epickitchens":
             # Compute the loss.
-            loss_verb = loss_fun(preds[0], labels['verb'])
-            loss_noun = loss_fun(preds[1], labels['noun'])
-            loss = 0.5 * (loss_verb + loss_noun)    
-        else:    
+            loss_verb = loss_fun(preds[0], labels["verb"])
+            loss_noun = loss_fun(preds[1], labels["noun"])
+            loss = 0.5 * (loss_verb + loss_noun)
+        else:
             loss = loss_fun(preds, labels)
         if cfg.MIXUP.ENABLED:
             labels = hard_labels
 
         # check Nan Loss.
         misc.check_nan_losses(loss)
-
 
         if cur_global_batch_size >= cfg.GLOBAL_BATCH_SIZE:
             # Perform the backward pass.
@@ -226,7 +322,8 @@ def train_epoch(
         elif isinstance(labels, (dict,)) and cfg.TRAIN.DATASET == "Epickitchens":
             # Compute the verb accuracies.
             verb_top1_acc, verb_top5_acc = metrics.topk_accuracies(
-                preds[0], labels['verb'], (1, 5))
+                preds[0], labels["verb"], (1, 5)
+            )
 
             # Gather all the predictions across all the devices.
             if cfg.NUM_GPUS > 1:
@@ -243,7 +340,8 @@ def train_epoch(
 
             # Compute the noun accuracies.
             noun_top1_acc, noun_top5_acc = metrics.topk_accuracies(
-                preds[1], labels['noun'], (1, 5))
+                preds[1], labels["noun"], (1, 5)
+            )
 
             # Gather all the predictions across all the devices.
             if cfg.NUM_GPUS > 1:
@@ -260,9 +358,8 @@ def train_epoch(
 
             # Compute the action accuracies.
             action_top1_acc, action_top5_acc = metrics.multitask_topk_accuracies(
-                (preds[0], preds[1]),
-                (labels['verb'], labels['noun']),
-                (1, 5))
+                (preds[0], preds[1]), (labels["verb"], labels["noun"]), (1, 5)
+            )
 
             # Gather all the predictions across all the devices.
             if cfg.NUM_GPUS > 1:
@@ -282,7 +379,8 @@ def train_epoch(
                 (verb_top1_acc, noun_top1_acc, action_top1_acc),
                 (verb_top5_acc, noun_top5_acc, action_top5_acc),
                 (loss_verb, loss_noun, loss),
-                lr, inputs[0].size(0) * cfg.NUM_GPUS
+                lr,
+                inputs[0].size(0) * cfg.NUM_GPUS,
             )
             if writer is not None:
                 writer.add_scalars(
@@ -312,23 +410,32 @@ def train_epoch(
                     [loss] = du.all_reduce([loss])
                 loss = loss.item()
             else:
-                # Compute the errors.
-                num_topks_correct = metrics.topks_correct(preds, labels, (1, min(5,preds.shape[0])))
-                top1_err, top5_err = [
-                    (1.0 - x / preds.size(0)) * 100.0 for x in num_topks_correct
-                ]
-                # Gather all the predictions across all the devices.
-                if cfg.NUM_GPUS > 1:
-                    loss, top1_err, top5_err = du.all_reduce(
-                        [loss, top1_err, top5_err]
+                if preds is not None:
+                    # Compute the errors.
+                    num_topks_correct = metrics.topks_correct(
+                        preds, labels, (1, min(5, preds.shape[0]))
                     )
+                    top1_err, top5_err = [
+                        (1.0 - x / preds.size(0)) * 100.0 for x in num_topks_correct
+                    ]
+                    # Gather all the predictions across all the devices.
+                    if cfg.NUM_GPUS > 1:
+                        loss, top1_err, top5_err = du.all_reduce(
+                            [loss, top1_err, top5_err]
+                        )
 
-                # Copy the stats from GPU to CPU (sync point).
-                loss, top1_err, top5_err = (
-                    loss.item(),
-                    top1_err.item(),
-                    top5_err.item(),
-                )
+                    # Copy the stats from GPU to CPU (sync point).
+                    loss, top1_err, top5_err = (
+                        loss.item(),
+                        top1_err.item(),
+                        top5_err.item(),
+                    )
+                else:
+                    if cfg.NUM_GPUS > 1:
+                        loss = du.all_reduce([loss])[0]
+                    loss = loss.item()
+                    top1_err = -1
+                    top5_err = -1
 
             # Update and log stats.
             train_meter.update_stats(
@@ -380,8 +487,8 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, writer=None):
     # Evaluation mode enabled. The running stats would not be updated.
     model.eval()
     val_meter.iter_tic()
-    texts=[]
-    vids=[]
+    texts = []
+    vids = []
     for cur_iter, (inputs, labels, _, meta) in enumerate(val_loader):
         if cfg.NUM_GPUS:
             # Transferthe data to the current GPU device.
@@ -390,7 +497,7 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, writer=None):
                     inputs[i] = inputs[i].cuda(non_blocking=True)
             else:
                 inputs = inputs.cuda(non_blocking=True)
-            #labels = labels.cuda()
+            # labels = labels.cuda()
             if isinstance(labels, (dict,)):
                 labels = {k: v.cuda() for k, v in labels.items()}
             else:
@@ -431,50 +538,64 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, writer=None):
             elif isinstance(labels, (dict,)) and cfg.TRAIN.DATASET == "Epickitchens":
                 # Compute the verb accuracies.
                 verb_top1_acc, verb_top5_acc = metrics.topk_accuracies(
-                    preds[0], labels['verb'], (1, 5))
+                    preds[0], labels["verb"], (1, 5)
+                )
 
                 # Combine the errors across the GPUs.
                 if cfg.NUM_GPUS > 1:
                     verb_top1_acc, verb_top5_acc = du.all_reduce(
-                        [verb_top1_acc, verb_top5_acc])
+                        [verb_top1_acc, verb_top5_acc]
+                    )
 
                 # Copy the errors from GPU to CPU (sync point).
-                verb_top1_acc, verb_top5_acc = verb_top1_acc.item(), verb_top5_acc.item()
+                verb_top1_acc, verb_top5_acc = (
+                    verb_top1_acc.item(),
+                    verb_top5_acc.item(),
+                )
 
                 # Compute the noun accuracies.
                 noun_top1_acc, noun_top5_acc = metrics.topk_accuracies(
-                    preds[1], labels['noun'], (1, 5))
+                    preds[1], labels["noun"], (1, 5)
+                )
 
                 # Combine the errors across the GPUs.
                 if cfg.NUM_GPUS > 1:
                     noun_top1_acc, noun_top5_acc = du.all_reduce(
-                        [noun_top1_acc, noun_top5_acc])
+                        [noun_top1_acc, noun_top5_acc]
+                    )
 
                 # Copy the errors from GPU to CPU (sync point).
-                noun_top1_acc, noun_top5_acc = noun_top1_acc.item(), noun_top5_acc.item()
+                noun_top1_acc, noun_top5_acc = (
+                    noun_top1_acc.item(),
+                    noun_top5_acc.item(),
+                )
 
                 # Compute the action accuracies.
                 action_top1_acc, action_top5_acc = metrics.multitask_topk_accuracies(
-                    (preds[0], preds[1]),
-                    (labels['verb'], labels['noun']),
-                    (1, 5))
+                    (preds[0], preds[1]), (labels["verb"], labels["noun"]), (1, 5)
+                )
 
                 # Combine the errors across the GPUs.
                 if cfg.NUM_GPUS > 1:
-                    action_top1_acc, action_top5_acc = du.all_reduce([action_top1_acc, action_top5_acc])
+                    action_top1_acc, action_top5_acc = du.all_reduce(
+                        [action_top1_acc, action_top5_acc]
+                    )
 
                 # Copy the errors from GPU to CPU (sync point).
-                action_top1_acc, action_top5_acc = action_top1_acc.item(), action_top5_acc.item()
+                action_top1_acc, action_top5_acc = (
+                    action_top1_acc.item(),
+                    action_top5_acc.item(),
+                )
 
                 val_meter.iter_toc()
-                
+
                 # Update and log stats.
                 val_meter.update_stats(
                     (verb_top1_acc, noun_top1_acc, action_top1_acc),
                     (verb_top5_acc, noun_top5_acc, action_top5_acc),
-                    inputs[0].size(0) * cfg.NUM_GPUS
+                    inputs[0].size(0) * cfg.NUM_GPUS,
                 )
-                
+
                 # write to tensorboard format if available.
                 if writer is not None:
                     writer.add_scalars(
@@ -487,7 +608,7 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, writer=None):
                             "Val/action_top5_acc": action_top5_acc,
                         },
                         global_step=len(val_loader) * cur_epoch + cur_iter,
-                    )        
+                    )
             else:
                 # Compute the errors.
                 num_topks_correct = metrics.topks_correct(preds, labels, (1, 5))
@@ -526,30 +647,31 @@ def eval_epoch(val_loader, model, val_meter, cur_epoch, cfg, writer=None):
 
     # Log epoch stats.
     val_meter.log_epoch_stats(cur_epoch)
-    if cfg.TRAIN.LABEL_EMB == '' and not cfg.TRAIN.TEXT == '' and ('youcook' in cfg.DATA.PATH_TO_DATA_DIR or 'coin' in cfg.DATA.PATH_TO_DATA_DIR):
-        all_preds = torch.mm(torch.cat(vids), torch.cat(texts).transpose(0,1))
+    if (
+        cfg.TRAIN.LABEL_EMB == ""
+        and not cfg.TRAIN.TEXT == ""
+        and (
+            "youcook" in cfg.DATA.PATH_TO_DATA_DIR
+            or "coin" in cfg.DATA.PATH_TO_DATA_DIR
+        )
+    ):
+        all_preds = torch.mm(torch.cat(vids), torch.cat(texts).transpose(0, 1))
         dis = all_preds.numpy().transpose()
         print(dis.shape)
         met = compute_metrics(dis)
         print_computed_metrics(met)
-            
+
     # write to tensorboard format if available.
     if writer is not None:
         if cfg.DETECTION.ENABLE:
-            writer.add_scalars(
-                {"Val/mAP": val_meter.full_map}, global_step=cur_epoch
-            )
+            writer.add_scalars({"Val/mAP": val_meter.full_map}, global_step=cur_epoch)
         else:
             all_preds = [pred.clone().detach() for pred in val_meter.all_preds]
-            all_labels = [
-                label.clone().detach() for label in val_meter.all_labels
-            ]
+            all_labels = [label.clone().detach() for label in val_meter.all_labels]
             if cfg.NUM_GPUS:
                 all_preds = [pred.cpu() for pred in all_preds]
                 all_labels = [label.cpu() for label in all_labels]
-            writer.plot_eval(
-                preds=all_preds, labels=all_labels, global_step=cur_epoch
-            )
+            writer.plot_eval(preds=all_preds, labels=all_labels, global_step=cur_epoch)
 
     val_meter.reset()
 
@@ -607,9 +729,7 @@ def build_trainer(cfg):
     train_loader = loader.construct_loader(cfg, "train")
     val_loader = loader.construct_loader(cfg, "val")
 
-    precise_bn_loader = loader.construct_loader(
-        cfg, "train", is_precise_bn=True
-    )
+    precise_bn_loader = loader.construct_loader(cfg, "train", is_precise_bn=True)
     # Create meters.
     train_meter = TrainMeter(len(train_loader), cfg)
     val_meter = ValMeter(len(val_loader), cfg)
@@ -675,7 +795,7 @@ def train(cfg):
         if cfg.BN.USE_PRECISE_STATS
         else None
     )
-    if cfg.TRAIN.DATASET == 'Epickitchens':
+    if cfg.TRAIN.DATASET == "Epickitchens":
         train_meter = EPICTrainMeter(len(train_loader), cfg)
         val_meter = EPICValMeter(len(val_loader), cfg)
     else:
@@ -683,9 +803,7 @@ def train(cfg):
         val_meter = ValMeter(len(val_loader), cfg)
 
     # set up writer for logging to Tensorboard format.
-    if cfg.TENSORBOARD.ENABLE and du.is_master_proc(
-        cfg.NUM_GPUS * cfg.NUM_SHARDS
-    ):
+    if cfg.TENSORBOARD.ENABLE and du.is_master_proc(cfg.NUM_GPUS * cfg.NUM_SHARDS):
         writer = tb.TensorboardWriter(cfg)
     else:
         writer = None
@@ -714,17 +832,13 @@ def train(cfg):
                 else:
                     last_checkpoint = cfg.TRAIN.CHECKPOINT_FILE_PATH
                 logger.info("Load from {}".format(last_checkpoint))
-                cu.load_checkpoint(
-                    last_checkpoint, model, cfg.NUM_GPUS > 1, optimizer
-                )
+                cu.load_checkpoint(last_checkpoint, model, cfg.NUM_GPUS > 1, optimizer)
 
         # Shuffle the dataset.
         loader.shuffle_dataset(train_loader, cur_epoch)
 
         # Train for one epoch.
-        train_epoch(
-            train_loader, model, optimizer, train_meter, cur_epoch, cfg, writer
-        )
+        train_epoch(train_loader, model, optimizer, train_meter, cur_epoch, cfg, writer)
 
         is_checkp_epoch = cu.is_checkpoint_epoch(
             cfg,
